@@ -1,0 +1,74 @@
+#!/bin/sh /etc/rc.common
+#
+# Copyright (C) 2022 NagaseKouichi
+#
+# This is free software, licensed under the GNU General Public License v3.
+# See /LICENSE for more information.
+#
+
+START=75
+
+USE_PROCD=1
+
+CRON_FILE=/etc/crontabs/root
+
+append_parm() {
+	local section="$1"
+	local option="$2"
+	local switch="$3"
+	local default="$4"
+	local _loctmp
+	config_get _loctmp "$section" "$option"
+	[ -n "$_loctmp" -o -n "$default" ] || return 0
+	procd_append_param command "$switch" "${_loctmp:-$default}"
+}
+
+add_cron() {
+	local enable
+	local auto_update
+	config_get_bool enable $1 enable
+	config_get_bool auto_update $1 auto_update
+	touch $CRON_FILE
+	sed -i '/mosdns-cn_update/d' $CRON_FILE
+	([ "$enable" = 1 ] && [ "$auto_update" = 1 ]) && echo "0 4 * * 6 /usr/share/mosdns-cn/mosdns-cn_update.sh >>/tmp/mosdns-cn_update.log 2>&1" >>$CRON_FILE
+	crontab $CRON_FILE
+}
+
+del_cron() {
+	sed -i '/mosdns-cn_update/d' $CRON_FILE
+	/etc/init.d/cron restart
+}
+
+start_instance() {
+	local enable
+	config_get_bool enable $1 enable
+	[ "$enable" = 1 ] || return 0
+
+	procd_open_instance
+	procd_set_param respawn
+	procd_set_param stderr 1
+	procd_set_param nice -5
+	procd_set_param limits nofile="65535 65535"
+	procd_set_param command /usr/bin/mosdns-cn --local-domain "/etc/mosdns-cn/local-domain.txt" --remote-domain "/etc/mosdns-cn/remote-domain.txt"
+	append_parm $1 listen_addr "-s"
+	config_list_foreach $1 local_upstream "procd_append_param command '--local-upstream' $2"
+	config_list_foreach $1 remote_upstream "procd_append_param command '--remote-upstream' $2"
+	config_list_foreach $1 local_ip "procd_append_param command '--local-ip' $2"
+	config_list_foreach $1 local_domain "procd_append_param command '--local-domain' $2"
+	config_list_foreach $1 remote_domain "procd_append_param command '--remote-domain' $2"
+	procd_close_instance
+}
+
+start_service() {
+	config_load mosdns-cn
+	config_foreach add_cron mosdns-cn
+	config_foreach start_instance mosdns-cn
+}
+
+stop_service() {
+	del_cron
+}
+
+service_triggers() {
+	procd_add_reload_trigger "mosdns-cn"
+}
